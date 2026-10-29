@@ -1,0 +1,48 @@
+plugins {
+    id "com.android.application"
+    id "com.google.gms.google-services"
+}
+
+def farmHubFilteredRes = layout.buildDirectory.dir("generated/farmhub/main-res")
+tasks.register("prepareFarmHubMainRes", Sync) {
+    from("src/main/res") {
+        exclude "**/*.backup_*"
+        exclude "drawable-nodpi/equipment_tractor.jfif"
+        exclude "drawable-nodpi/equipment_power_tiller.jpg"
+        exclude "drawable-nodpi/equipment_knapsack_sprayer.jpg"
+        exclude "drawable-nodpi/equipment_brush_cutter.JPG"
+        exclude "drawable-nodpi/equipment_chaff_cutter.jfif"
+    }
+    into(farmHubFilteredRes)
+}
+
+android {
+    namespace "in.farmhub.app"
+    compileSdk 36
+
+    sourceSets {
+        main {
+            // Stage the other resources without changing the original photo files.
+            res.setSrcDirs([farmHubFilteredRes])
+        }
+    }
+
+    defaultConfig {
+        applicationId "in.farmhub.app"
+        minSdk 24
+        targetSdk 28
+        versionCode 1
+        versionName "1.0"
+    }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn("prepareFarmHubMainRes")
+}
+
+dependencies {
+    implementation "com.google.firebase:firebase-storage"
+    implementation platform("com.google.firebase:firebase-bom:35.0.2")
+    implementation "com.google.firebase:firebase-auth"
+    implementation "com.google.firebase:firebase-firestore"
+}

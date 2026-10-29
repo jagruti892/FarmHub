@@ -1,0 +1,518 @@
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.active == true;
+    }
+
+    function approvedOwner(uid) {
+      return exists(/databases/$(database)/documents/ownerApprovals/$(uid))
+        && get(/databases/$(database)/documents/ownerApprovals/$(uid)).data.status == 'approved';
+    }
+
+    // Convert the rental timestamp to its India calendar date.
+    function dayKey(day) {
+      let localDay = day + duration.time(5, 30, 0, 0);
+      let d = localDay.date();
+      return string(d.year()) + '-'
+        + (d.month() < 10 ? '0' + string(d.month()) : string(d.month())) + '-'
+        + (d.day() < 10 ? '0' + string(d.day()) : string(d.day()));
+    }
+
+    // Rental day must represent midnight IST.
+    function validRentalDay(day) {
+      let localDay = day + duration.time(5, 30, 0, 0);
+      return day is timestamp
+        && localDay.hours() == 0
+        && localDay.minutes() == 0
+        && localDay.seconds() == 0
+        && localDay.nanos() == 0;
+    }
+
+    function validProduct(data) {
+      return data.keys().hasAll([
+          'name', 'nameSearch', 'categoryId', 'description', 'imageUrl',
+          'priceMinor', 'currency', 'unitLabel', 'stockQuantity',
+          'sellerUid', 'sellerDisplayName', 'sellerArea',
+          'publicationStatus', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'name', 'nameSearch', 'categoryId', 'description', 'imageUrl',
+          'priceMinor', 'currency', 'unitLabel', 'stockQuantity',
+          'sellerUid', 'sellerDisplayName', 'sellerArea',
+          'publicationStatus', 'createdAt', 'updatedAt'
+        ])
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 120
+        && data.nameSearch is string
+        && data.categoryId is string && data.categoryId.size() > 0
+        && data.description is string
+        && data.imageUrl is string
+        && data.priceMinor is int && data.priceMinor >= 0
+        && data.currency == 'INR'
+        && data.unitLabel is string && data.unitLabel.size() > 0
+        && data.stockQuantity is int && data.stockQuantity >= 0
+        && data.sellerUid is string
+        && data.sellerDisplayName is string
+        && data.sellerArea is string
+        && data.publicationStatus in ['draft', 'published']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /products/{productId} {
+      allow get: if signedIn()
+        && (
+          resource.data.publicationStatus == 'published'
+          || (
+            approvedOwner(request.auth.uid)
+            && resource.data.sellerUid == request.auth.uid
+          )
+        );
+
+      allow list: if signedIn()
+        && request.query.limit != null
+        && request.query.limit <= 25
+        && (
+          resource.data.publicationStatus == 'published'
+          || (
+            approvedOwner(request.auth.uid)
+            && resource.data.sellerUid == request.auth.uid
+          )
+        );
+
+      allow create: if signedIn()
+        && approvedOwner(request.auth.uid)
+        && request.resource.data.sellerUid == request.auth.uid
+        && validProduct(request.resource.data)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+
+      allow update: if signedIn()
+        && approvedOwner(request.auth.uid)
+        && resource.data.sellerUid == request.auth.uid
+        && request.resource.data.sellerUid == resource.data.sellerUid
+        && validProduct(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedAt == request.time;
+
+      allow delete: if false;
+    }
+
+    match /admins/{adminUid} {
+      allow get: if signedIn() && (request.auth.uid == adminUid || isAdmin());
+      allow list, create, update, delete: if false;
+    }
+
+    match /userProfiles/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['uid','email','role','createdAt'])
+        && request.resource.data.uid == uid
+        && request.resource.data.email is string
+        && request.resource.data.role in ['customer','owner']
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /ownerApplications/{ownerUid} {
+      allow create: if signedIn() && request.auth.uid == ownerUid
+        && request.resource.data.keys().hasOnly(['uid','email','status','submittedAt'])
+        && request.resource.data.uid == ownerUid
+        && request.resource.data.email is string
+        && request.resource.data.status == 'pending'
+        && request.resource.data.submittedAt == request.time;
+      allow get: if signedIn() && (request.auth.uid == ownerUid || isAdmin());
+      allow list: if isAdmin();
+      allow update: if isAdmin()
+        && resource.data.status == 'pending'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','reviewedAt','reviewedBy'])
+        && request.resource.data.status in ['approved','rejected']
+        && request.resource.data.reviewedBy == request.auth.uid
+        && request.resource.data.reviewedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /ownerApprovals/{ownerUid} {
+      allow get: if signedIn() && (request.auth.uid == ownerUid || isAdmin());
+      allow list: if isAdmin();
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasOnly(['status','approvedAt','approvedBy'])
+        && request.resource.data.status == 'approved'
+        && request.resource.data.approvedBy == request.auth.uid;
+      allow delete: if false;
+    }
+
+    
+function validEquipment(data) {
+  return data.keys().hasAll([
+      'ownerUid', 'name', 'description', 'categoryId', 'imageUrl',
+      'dailyPriceMinor', 'currency', 'location', 'publicationStatus',
+      'availabilityStatus', 'createdAt', 'updatedAt'
+    ])
+    && data.keys().hasOnly([
+      'ownerUid', 'name', 'description', 'categoryId', 'imageUrl',
+      'dailyPriceMinor', 'damageChargeMinor', 'currency', 'location',
+      'publicationStatus', 'availabilityStatus', 'createdAt', 'updatedAt'
+    ])
+    && data.ownerUid is string
+    && data.name is string
+    && data.description is string
+    && data.categoryId is string
+    && data.imageUrl is string
+    && data.dailyPriceMinor is int
+    && data.dailyPriceMinor > 0
+    && (
+      !('damageChargeMinor' in data)
+      || (
+        data.damageChargeMinor is int
+        && data.damageChargeMinor >= 0
+      )
+    )
+    && data.currency == 'INR'
+    && data.location is string
+    && data.publicationStatus in ['draft', 'published', 'archived']
+    && data.availabilityStatus in ['available', 'unavailable']
+    && data.createdAt is timestamp
+    && data.updatedAt is timestamp;
+}
+
+
+    function validBookingCreate(data, equipmentId) {
+      let equipment = get(
+        /databases/$(database)/documents/equipment/$(equipmentId)
+      ).data;
+
+      let equipmentDamageCharge = equipment.keys().hasAny(['damageChargeMinor'])
+        ? equipment.damageChargeMinor : 0;
+
+      return data.keys().hasAll([
+          'equipmentId', 'equipmentName', 'customerUid', 'ownerUid',
+          'rentalDay', 'returnDeadline', 'returnLocation',
+          'agreedPriceMinor', 'agreedDamageChargeMinor', 'currency',
+          'status', 'createdAt', 'agreementAccepted',
+          'agreementAcceptedAt', 'termsVersion', 'returnStatus',
+          'inspectionCondition', 'damageDescription', 'inspectionChargeMinor'
+        ])
+        && data.keys().hasOnly([
+          'equipmentId', 'equipmentName', 'customerUid', 'ownerUid',
+          'rentalDay', 'returnDeadline', 'returnLocation',
+          'agreedPriceMinor', 'agreedDamageChargeMinor', 'currency',
+          'status', 'createdAt', 'agreementAccepted',
+          'agreementAcceptedAt', 'termsVersion', 'returnStatus',
+          'inspectionCondition', 'damageDescription', 'inspectionChargeMinor',
+          'commissionRateBps', 'commissionMinor'
+        ])
+        && ((!('commissionRateBps' in data) && !('commissionMinor' in data))
+          || (data.commissionRateBps == 500
+            && data.commissionMinor == ((data.agreedPriceMinor * 5) / 100)))
+        && data.equipmentId == equipmentId
+        && data.equipmentName == equipment.name
+        && data.customerUid == request.auth.uid
+        && data.customerUid != data.ownerUid
+        && data.ownerUid == equipment.ownerUid
+        && approvedOwner(equipment.ownerUid)
+        && equipment.publicationStatus == 'published'
+        && equipment.availabilityStatus == 'available'
+        && equipment.location is string
+        && equipment.location.size() > 0
+        && data.returnLocation == equipment.location
+        && validRentalDay(data.rentalDay)
+        && data.rentalDay > request.time
+        // Midnight IST to 5:00 PM IST on the following calendar day = 41 hours.
+        && data.returnDeadline is timestamp
+        && data.returnDeadline == data.rentalDay + duration.time(41, 0, 0, 0)
+        && data.agreedPriceMinor is int
+        && data.agreedPriceMinor == equipment.dailyPriceMinor
+        && data.agreedDamageChargeMinor is int
+        && data.agreedDamageChargeMinor == equipmentDamageCharge
+        && data.agreedDamageChargeMinor >= 0
+        && data.currency == equipment.currency
+        && data.status == 'pending'
+        && data.createdAt == request.time
+        && data.agreementAccepted == true
+        && data.agreementAcceptedAt == request.time
+        && data.termsVersion == 'farmhub-rental-v1'
+        && data.returnStatus == 'unreturned'
+        && data.inspectionCondition == 'not_inspected'
+        && data.damageDescription == ''
+        && data.inspectionChargeMinor is int
+        && data.inspectionChargeMinor == 0;
+    }
+
+    function bookingDayLockMatches(bookingId, data) {
+      let lockPath = /databases/$(database)/documents/equipment/$(data.equipmentId)/rentalDays/$(dayKey(data.rentalDay));
+      return existsAfter(lockPath)
+        && getAfter(lockPath).data.bookingId == bookingId
+        && getAfter(lockPath).data.rentalDay == data.rentalDay;
+    }
+
+    function validOwnerDecision(bookingId) {
+      let equipment = get(
+        /databases/$(database)/documents/equipment/$(resource.data.equipmentId)
+      ).data;
+
+      let onlyDecisionFields = request.resource.data.diff(resource.data)
+        .affectedKeys().hasOnly(['status', 'reviewedAt']);
+
+      let commonOwnerChecks = request.auth.uid == resource.data.ownerUid
+        && equipment.ownerUid == request.auth.uid
+        && approvedOwner(request.auth.uid)
+        && resource.data.status == 'pending'
+        && request.resource.data.equipmentId == resource.data.equipmentId
+        && request.resource.data.customerUid == resource.data.customerUid
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.rentalDay == resource.data.rentalDay
+        && request.resource.data.agreedPriceMinor == resource.data.agreedPriceMinor
+        && request.resource.data.currency == resource.data.currency
+        && onlyDecisionFields
+        && request.resource.data.reviewedAt == request.time;
+
+      return commonOwnerChecks
+        && (request.resource.data.status == 'rejected'
+          || (request.resource.data.status == 'approved'
+            && equipment.publicationStatus == 'published'
+            && equipment.availabilityStatus == 'available'
+            && bookingDayLockMatches(bookingId, request.resource.data)));
+    }
+
+    
+function validOwnerInspection() {
+  let equipment = get(
+    /databases/$(database)/documents/equipment/$(resource.data.equipmentId)
+  ).data;
+
+  let changed = request.resource.data.diff(resource.data).affectedKeys();
+
+  let inspectionFields = [
+    'returnStatus',
+    'inspectionCondition',
+    'damageDescription',
+    'inspectionChargeMinor',
+    'inspectedAt'
+  ];
+
+  // Case 1: Equipment is inspected and has no damage.
+  let validReturnedWithoutDamage =
+    request.resource.data.returnStatus == 'returned'
+    && request.resource.data.inspectionCondition == 'no_damage'
+    && request.resource.data.damageDescription == ''
+    && request.resource.data.inspectionChargeMinor == 0;
+
+  // Case 2: Equipment is returned with damage.
+  // The charge cannot exceed the agreed damage-protection amount.
+  let validReturnedWithDamage =
+    request.resource.data.returnStatus == 'returned'
+    && request.resource.data.inspectionCondition == 'damaged'
+    && request.resource.data.damageDescription is string
+    && request.resource.data.damageDescription.size() > 0
+    && request.resource.data.inspectionChargeMinor is int
+    && request.resource.data.inspectionChargeMinor >= 0
+    && request.resource.data.inspectionChargeMinor
+      <= resource.data.agreedDamageChargeMinor;
+
+  // Case 3: Owner records an inspection before the equipment is returned.
+  let validUnreturnedInspection =
+    request.resource.data.returnStatus == 'unreturned'
+    && request.resource.data.inspectionCondition == 'not_inspected'
+    && request.resource.data.damageDescription == ''
+    && request.resource.data.inspectionChargeMinor == 0;
+
+  return signedIn()
+    && approvedOwner(request.auth.uid)
+    && resource.data.keys().hasAll([
+      'equipmentName',
+      'returnDeadline',
+      'returnLocation',
+      'agreedDamageChargeMinor',
+      'agreementAccepted',
+      'agreementAcceptedAt',
+      'termsVersion'
+    ])
+    && resource.data.returnDeadline is timestamp
+    && resource.data.agreedDamageChargeMinor is int
+    && resource.data.agreedDamageChargeMinor >= 0
+    && resource.data.agreementAccepted == true
+    && resource.data.agreementAcceptedAt is timestamp
+    && resource.data.termsVersion == 'farmhub-rental-v1'
+    && resource.data.status == 'approved'
+    && resource.data.returnStatus == 'unreturned'
+    && request.resource.data.status == resource.data.status
+    && request.resource.data.ownerUid == request.auth.uid
+    && request.resource.data.ownerUid == resource.data.ownerUid
+    && equipment.ownerUid == request.auth.uid
+    && request.resource.data.customerUid == resource.data.customerUid
+    && request.resource.data.equipmentId == resource.data.equipmentId
+    && request.resource.data.rentalDay == resource.data.rentalDay
+    && request.resource.data.agreedPriceMinor == resource.data.agreedPriceMinor
+    && request.resource.data.agreedDamageChargeMinor
+      == resource.data.agreedDamageChargeMinor
+    && request.resource.data.returnDeadline == resource.data.returnDeadline
+    && request.resource.data.returnLocation == resource.data.returnLocation
+    && request.resource.data.agreementAccepted == resource.data.agreementAccepted
+    && request.resource.data.agreementAcceptedAt
+      == resource.data.agreementAcceptedAt
+    && request.resource.data.termsVersion == resource.data.termsVersion
+    && request.resource.data.keys().hasAll(inspectionFields)
+    && changed.hasOnly(inspectionFields)
+    && request.resource.data.inspectedAt == request.time
+    && (
+      validUnreturnedInspection
+      || validReturnedWithoutDamage
+      || validReturnedWithDamage
+    );
+}
+
+
+    match /equipment/{equipmentId} {
+      allow get, list: if signedIn()
+        && (resource.data.publicationStatus == 'published'
+          || (resource.data.ownerUid == request.auth.uid
+            && approvedOwner(request.auth.uid)));
+
+      allow create: if signedIn()
+        && approvedOwner(request.auth.uid)
+        && request.resource.data.ownerUid == request.auth.uid
+        && validEquipment(request.resource.data)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+
+      allow update: if signedIn()
+        && approvedOwner(request.auth.uid)
+        && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && validEquipment(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedAt == request.time;
+
+      allow delete: if false;
+
+      match /rentalDays/{dayKeyValue} {
+        allow get: if signedIn()
+          && approvedOwner(request.auth.uid)
+          && get(/databases/$(database)/documents/equipment/$(equipmentId)).data.ownerUid == request.auth.uid;
+
+        allow list: if false;
+
+        allow create: if signedIn()
+          && approvedOwner(request.auth.uid)
+          && get(/databases/$(database)/documents/equipment/$(equipmentId)).data.ownerUid == request.auth.uid
+          && request.resource.data.keys().hasAll(['bookingId', 'rentalDay', 'createdAt'])
+          && request.resource.data.keys().hasOnly(['bookingId', 'rentalDay', 'createdAt'])
+          && request.resource.data.bookingId is string
+          && validRentalDay(request.resource.data.rentalDay)
+          && dayKeyValue == dayKey(request.resource.data.rentalDay)
+          && request.resource.data.createdAt == request.time
+          && getAfter(/databases/$(database)/documents/bookings/$(request.resource.data.bookingId)).data.status == 'approved'
+          && getAfter(/databases/$(database)/documents/bookings/$(request.resource.data.bookingId)).data.equipmentId == equipmentId
+          && getAfter(/databases/$(database)/documents/bookings/$(request.resource.data.bookingId)).data.ownerUid == request.auth.uid
+          && getAfter(/databases/$(database)/documents/bookings/$(request.resource.data.bookingId)).data.rentalDay == request.resource.data.rentalDay;
+
+        allow update, delete: if false;
+      }
+    }
+
+    match /bookings/{bookingId} {
+      allow get, list: if signedIn()
+        && (isAdmin() || resource.data.customerUid == request.auth.uid
+          || (resource.data.ownerUid == request.auth.uid
+            && approvedOwner(request.auth.uid)));
+
+      allow create: if signedIn()
+        && validBookingCreate(request.resource.data, request.resource.data.equipmentId);
+
+      allow update: if signedIn()
+        && (validOwnerDecision(bookingId) || validOwnerInspection());
+
+      allow delete: if false;
+    }
+
+    match /carts/{customerUid}/items/{productId} {
+      function cartProduct() {
+        return get(/databases/$(database)/documents/products/$(productId)).data;
+      }
+
+      allow get, list: if signedIn()
+        && request.auth.uid == customerUid;
+
+      allow create, update: if signedIn()
+        && request.auth.uid == customerUid
+        && request.resource.data.keys().hasAll([
+          'name', 'categoryId', 'imageUrl', 'priceMinor',
+          'currency', 'unitLabel', 'quantity', 'sellerUid',
+          'sellerDisplayName', 'sellerArea', 'updatedAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'name', 'categoryId', 'imageUrl', 'priceMinor',
+          'currency', 'unitLabel', 'quantity', 'sellerUid',
+          'sellerDisplayName', 'sellerArea', 'updatedAt'
+        ])
+        && request.resource.data.quantity is int
+        && request.resource.data.quantity > 0
+        && request.resource.data.updatedAt == request.time
+        && exists(/databases/$(database)/documents/products/$(productId))
+        && cartProduct().publicationStatus == 'published'
+        && request.resource.data.name == cartProduct().name
+        && request.resource.data.categoryId == cartProduct().categoryId
+        && request.resource.data.imageUrl == cartProduct().imageUrl
+        && request.resource.data.priceMinor == cartProduct().priceMinor
+        && request.resource.data.currency == cartProduct().currency
+        && request.resource.data.unitLabel == cartProduct().unitLabel
+        && request.resource.data.sellerUid == cartProduct().sellerUid
+        && request.resource.data.sellerDisplayName == cartProduct().sellerDisplayName
+        && request.resource.data.sellerArea == cartProduct().sellerArea
+        && request.resource.data.quantity <= cartProduct().stockQuantity;
+
+      allow delete: if signedIn()
+        && request.auth.uid == customerUid;
+    }
+    match /orders/{orderId} {
+      allow create: if signedIn()
+        && request.resource.data.customerUid == request.auth.uid
+        && request.resource.data.keys().hasAll([
+          'customerUid', 'items', 'totalMinor', 'currency',
+          'paymentMethod', 'paymentStatus', 'status', 'createdAt', 'deliveryAddress'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'customerUid', 'items', 'totalMinor', 'currency',
+          'paymentMethod', 'paymentStatus', 'status', 'createdAt', 'deliveryAddress',
+          'commissionRateBps', 'commissionMinor'
+        ])
+        && ((!('commissionRateBps' in request.resource.data) && !('commissionMinor' in request.resource.data))
+          || (request.resource.data.commissionRateBps == 500
+            && request.resource.data.commissionMinor == ((request.resource.data.totalMinor * 5) / 100)))
+        && request.resource.data.deliveryAddress is string
+        && request.resource.data.deliveryAddress.size() >= 10
+        && request.resource.data.deliveryAddress.size() <= 500
+        && request.resource.data.items is list
+        && request.resource.data.items.size() > 0
+        && request.resource.data.items.size() <= 25
+        && request.resource.data.totalMinor is int
+        && request.resource.data.totalMinor >= 0
+        && request.resource.data.currency == 'INR'
+        && request.resource.data.paymentMethod == 'COD'
+        && request.resource.data.paymentStatus == 'Pending'
+        && request.resource.data.status == 'Placed'
+        && request.resource.data.createdAt == request.time;
+
+      allow get, list: if signedIn()
+        && (isAdmin() || resource.data.customerUid == request.auth.uid);
+
+      allow update, delete: if false;
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+
+

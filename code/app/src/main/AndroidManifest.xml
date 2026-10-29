@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Firebase Authentication requires internet access. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+    android:label="FarmHub"
+    android:icon="@mipmap/ic_launcher"
+    android:theme="@style/AppTheme">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity android:name=".AdminApprovalActivity" android:exported="false" />
+        <activity android:name=".RevenueActivity" android:exported="false" />
+
+        <activity
+            android:name=".HomeActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".RoleDestinationActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".ProductCatalogActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".ProductDetailsActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".EquipmentCatalogActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".EquipmentDetailsActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".BookingListActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".BookingInspectionActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".OwnerEquipmentActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".AddEquipmentActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".EditEquipmentActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".SellerProductsActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".CartActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".ProductOrdersActivity"
+            android:exported="false" />
+
+    </application>
+
+</manifest>
